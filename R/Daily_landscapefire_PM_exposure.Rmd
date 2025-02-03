@@ -1,0 +1,132 @@
+---
+title: "landscape fire PM2.5 population weighted exposure"
+author: "Timothy Chaston"
+date: "2024-10-20"
+output: html_document
+---
+This script performs population weighted exposure calculations for every day of the years 2003-2022 using gridded daily PM2.5 concentrations from bushfires and intentional landscape burns. PM2.5 concentrations were estimated using a Random Forest model of burn areas, meteorology. The model was tested against monitor data and those from two more sophisticated daily pm models from CSIRO (Cope M, et al.) and the Centre for Safe Air (Hanigan IC, et al.)   
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(raster)
+library(sf)
+library(data.table)
+library(dplyr)
+library(exactextractr)
+
+
+setwd("C:/Users/CastonT/OneDrive - Environment Protection Authority Victoria/Documents - Environmental Public Health Branch (internal) SharePoint")
+pop <- raster("Data/Population_ABS/australian population grids 2016 to 2021 tiff/GEOTIFF_2021/apg21r_1_0_0_1.tif")
+
+nc_raster1 <- raster::brick("Data/PollutionEPA/UTAS_landscape_fire_PM/pm25_bushfire_Vic_Jan2003_Jun2022_20230721_stl.nc")
+
+nc_raster2 <- raster::brick("Data/PollutionEPA/UTAS_landscape_fire_PM/pm25_prescribed_burn_Vic_Jan2003_Jun2022_20230721_stl.nc")
+
+nc_raster3 <- raster::brick("Data/PollutionEPA/UTAS_landscape_fire_PM/pm25_all_Vic_Jan2003_Jun2022_20230721.nc")
+
+shp <- st_read("Data/Spatial_ABS/shapes2021AUST/SA2_2021_AUST_SHP_GDA94/SA2_2021_AUST_GDA94.shp") %>% st_transform('+proj=longlat +datum=WGS84')
+
+vic_shp <- st_read("Data/Spatial_ABS/VIC.shp")
+
+AQFx <- readRDS("Data/Pollution_CSIRO/data_derived/Daily_PM2.5_conc_by_SA2.rds")
+```
+## Read population 2021 and daily pollution grids 2003-2022 and SA2 shapes2021
+
+
+```{r crop files to Victoria and harmonise resolution}
+
+sa2_nm <-  as.data.table(shp) 
+SA2 <- sa2_nm[STE_CODE21 == "2" & AREASQKM21 > 0]
+SA2 <- st_as_sf(SA2)
+
+
+#cut population grid to victoria
+
+pop_vic <- exact_extract(pop, vic_shp, fun = NULL, include_cell = TRUE, include_xy = TRUE, force_df = TRUE, stack_apply = FALSE)
+pop_vic <- rasterFromXYZ(as.data.frame(pop_vic)[, c("x", "y", "value")])
+plot(pop_vic)
+d <- res(pop_vic)
+
+
+s <- res(nc_rasters)
+j <- res(pop)
+#aggregate population to 5km to match air pollution rasters
+pop5 <- aggregate(pop_vic, 5, fun=sum)
+crs(pop5) <- crs(nc_rasters)
+
+```
+
+## do population weighting with gridded populations
+```{r extract to SA2 2021}
+days1 <- exact_extract(nc_raster1, SA2, "weighted_mean", weights = pop5, append_cols = "SA2_CODE21", stack_apply = FALSE)
+
+days2 <- exact_extract(nc_raster2, SA2, "weighted_mean", weights = pop5, append_cols = "SA2_CODE21", stack_apply = FALSE)
+
+days3 <- exact_extract(nc_raster3, SA2, "weighted_mean", weights = pop5, append_cols = "SA2_CODE21", stack_apply = FALSE)
+#qc <- exact_extract(nc_rasters, SA2, "mean", append_cols = "SA2_MAIN16", stack_apply = FALSE)
+# check_diff <- qc$mean.X2003.01.01.12.00.00 - days$weighted_mean.X2003.01.01.12.00.00
+
+
+```
+
+## 
+
+```{r make long table and format date}
+day_dt1 <- as.data.table(days1)
+dt1 <- melt(day_dt1, id.vars = c("SA2_CODE21"))
+setnames(dt1, "variable", "date")
+setnames(dt1, "value", "BF_PM")
+
+day_dt2 <- as.data.table(days2)
+dt2 <- melt(day_dt2, id.vars = c("SA2_CODE21"))
+setnames(dt2, "variable", "date")
+setnames(dt2, "value", "PB_PM")
+dt <- merge(dt1, dt2, by = c("SA2_CODE21", "date"))
+
+day_dt3 <- as.data.table(days3)
+dt3 <- melt(day_dt3, id.vars = c("SA2_CODE21"))
+setnames(dt3, "variable", "date")
+setnames(dt3, "value", "ALL_PM")
+dt <- merge(dt, dt3, by = c("SA2_CODE21", "date"))
+
+
+dt$date <- as.character(substr(dt$date, 16, 25))
+dt$date <- gsub(".", "/", dt$date, fixed = TRUE)
+
+dt$date <- as.Date(dt$date, "%Y/%m/%d")
+
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r compare models}
+
+AQF <- as.data.table(rds)
+AQFx <- melt(AQF, id.vars = c("SA2_MAIN16"))
+setnames(AQFx, "variable", "date")
+AQFx$date <- paste0(substr(AQFx$date, 1, 4), "/", substr(AQFx$date, 5, 6), "/", substr(AQFx$date, 7, 8)) 
+
+AQFx$date <- as.Date(AQFx$date, "%Y/%m/%d")
+
+
+plot <- merge(as.data.table(AQFx[SA2_MAIN16 == "204011057"]), as.data.table(dt[SA2_CODE21 == "204011057"]), by = c("date"))
+
+plot(plot$value, plot$ALL_PM)
+cor.test(plot$value, plot$ALL_PM)
+
+plot(plot$date, plot$ALL_PM)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
